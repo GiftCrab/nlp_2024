@@ -15,7 +15,13 @@ try:
             line = file.readline()
             if not line:
                 break
-            stopwords.append(line)
+            stopwords.append(line.strip())
+    with open("stopwords/SpecialCharacters&PunctuationMarks.txt", "r") as file:
+        while True:
+            line = file.readline()
+            if not line:
+                break
+            stopwords.append(line.strip())
 except FileNotFoundError:
     logging.warning("No stopwords file found.")
 
