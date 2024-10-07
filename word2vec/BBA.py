@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 import utils
 from SkipGram import SkipGramModel, SkipGramDataset
 from CBOW import CBOWModel, CBOWDataset
+from sklearn.decomposition import PCA
 
 
 class Word2Vec(torch.nn.Module):
@@ -49,7 +50,7 @@ class Word2Vec(torch.nn.Module):
         if sentences is None:
             return
         self.sentences = sentences
-        self.stopwords = stopwords or [None]
+        self.stopwords = stopwords or []
         self.vector_size = vector_size
         self.window = window
         self.min_count = min_count
@@ -84,12 +85,15 @@ class Word2Vec(torch.nn.Module):
         self.target_vectors = None  # 目标词向量模
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 1. 词汇表构建
-        self.build_vocab(sentences=self.sentences, stopwords=self.stopwords, min_count=self.min_count,
+        # 1. 数据预处理
+        self.prepare_data(sentences=self.sentences, stopwords=self.stopwords, )
+
+        # 2. 词汇表构建
+        self.build_vocab(sentences=self.sentences, min_count=self.min_count,
                          sorted_vocab=self.sorted_vocab,
                          negative=self.negative, ns_exponent=self.ns_exponent)
 
-        # 2. 训练词向量
+        # 3. 训练词向量
         self.train(sentences=self.sentences, epochs=self.epochs,
                    algorithm=self.algorithm,
                    window=self.window,
@@ -103,8 +107,24 @@ class Word2Vec(torch.nn.Module):
                    start_alpha=self.alpha, end_alpha=self.min_alpha,
                    compute_loss=self.compute_loss)
 
+    def prepare_data(self, sentences=[], stopwords=[]):
+        """
+        数据预处理：去除停用词
+        """
+        tokens = []
+        for sentence in sentences:
+            token = []
+            for word in sentence:
+                # 去除停用词
+                if word not in stopwords:
+                    token.append(word)
+            if len(token) > 0:
+                tokens.append(token)
+        # TODO 优化sentences和tokens的区别
+        self.sentences = tokens
+
     def build_vocab(
-            self, sentences=None, stopwords=[], min_count=5, sorted_vocab=True, negative=None, ns_exponent=0.75,
+            self, sentences=None, min_count=5, sorted_vocab=True, negative=None, ns_exponent=0.75,
             **kwargs,
     ):
         """
@@ -121,8 +141,7 @@ class Word2Vec(torch.nn.Module):
         word_freq = defaultdict(int)
         for sentence in sentences:
             for word in sentence:
-                if word not in stopwords:
-                    word_freq[word] += 1
+                word_freq[word] += 1
             total_words += len(sentence)
 
         # 原始词频
@@ -490,6 +509,15 @@ class Word2Vec(torch.nn.Module):
             return vectors[index] / norm[index]
         else:
             return vectors[index]
+
+    def pca(self, words=None, n_components=2):
+        """
+        主成分分析
+        """
+        words = self._ensure_list(words)
+        words_embeddings = self.target_vectors([self.key_to_index[word] for word in words])
+        pca = PCA(n_components=n_components)
+        return pca.fit_transform(words_embeddings)
 
     def save(self, filename):
         # TODO  save权重和属性

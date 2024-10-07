@@ -1,9 +1,8 @@
 import logging
-
 import gensim
 import jieba
-
 import BBA
+import matplotlib.pyplot as plt
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -28,7 +27,7 @@ except FileNotFoundError:
 # 中文训练
 try:
     sentences = []
-    with open("鲁迅全集.txt", "r") as file:  # 使用"r"模式打开文件，表示read
+    with open("../datasets/wiki/simplified_chinese_wiki.txt", "r") as file:  # 使用"r"模式打开文件，表示read
         while True:  # 使用一个无限循环
             line = file.readline()  # 读取一行
             if not line:  # 如果读取的行为空（即读到文件末尾），则跳出循环
@@ -76,6 +75,18 @@ for word1, word2 in words:
     cbowSimilarity = bbaCBOW.similarity(word1, word2)
     sgSimilarity = bbaSG.similarity(word1, word2)
     print(f'Similarity words: {word1, word2} -> cbow similarity: {cbowSimilarity}, sg similarity: {sgSimilarity}')
+
+# C词向量可视化
+words = ["天堂", "文学", "我们", "伟大", "革命", "医生"]
+cbow_reduced_embeddings = bbaCBOW.pca(words, n_components=2)
+sg_reduced_embeddings = bbaSG.pca(words, n_components=2)
+plt.figure(figsize=(10, 6))
+for i, word_index in enumerate(words):
+    x, y = cbow_reduced_embeddings[i]
+    plt.scatter(x, y)
+    plt.text(x, y, str(word_index), fontsize=9)
+plt.title('bbaCBOW PCA of Word Embeddings')
+plt.show()
 
 # 保存模型
 bbaCBOW.save('./pth/bbaCBOW.pth')
