@@ -1,0 +1,1 @@
+python bz2_2_txt.py /workspace/datasets/wiki/zhwiki-latest-pages-articles.xml.bz2 /workspace/datasets/wiki/zhwiki.txt
