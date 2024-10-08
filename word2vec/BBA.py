@@ -1,9 +1,9 @@
 import logging
-
 import torch
 import numpy
 from collections import Counter, defaultdict
 import utils
+import datetime
 from SkipGram import SkipGramModel, SkipGramDataset
 from CBOW import CBOWModel, CBOWDataset
 from sklearn.decomposition import PCA
@@ -49,7 +49,7 @@ class Word2Vec(torch.nn.Module):
         super(Word2Vec, self).__init__()
         if sentences is None:
             return
-        self.sentences = sentences
+        # self.sentences = sentences
         self.stopwords = stopwords or []
         self.vector_size = vector_size
         self.window = window
@@ -80,21 +80,21 @@ class Word2Vec(torch.nn.Module):
         self.index_to_key = [None]  # idx_to_word
         self.key_to_index = {}  # word_to_idx
         self.context_vectors = None  # 上下文词向量
-        self.target_norms = None  # 目标词向量
         self.context_norms = None  # 上下文词向量模
-        self.target_vectors = None  # 目标词向量模
+        self.target_vectors = None  # 目标词向量
+        self.target_norms = None  # 目标词向量模
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # 1. 数据预处理
-        self.prepare_data(sentences=self.sentences, stopwords=self.stopwords, )
+        sentences = self.prepare_data(sentences=sentences, stopwords=self.stopwords, )
 
         # 2. 词汇表构建
-        self.build_vocab(sentences=self.sentences, min_count=self.min_count,
+        self.build_vocab(sentences=sentences, min_count=self.min_count,
                          sorted_vocab=self.sorted_vocab,
                          negative=self.negative, ns_exponent=self.ns_exponent)
 
         # 3. 训练词向量
-        self.train(sentences=self.sentences, epochs=self.epochs,
+        self.train(sentences=sentences, epochs=self.epochs,
                    algorithm=self.algorithm,
                    window=self.window,
                    key_to_index=self.key_to_index,
@@ -121,7 +121,8 @@ class Word2Vec(torch.nn.Module):
             if len(token) > 0:
                 tokens.append(token)
         # TODO 优化sentences和tokens的区别
-        self.sentences = tokens
+        # self.sentences = tokens
+        return tokens
 
     def build_vocab(
             self, sentences=None, min_count=5, sorted_vocab=True, negative=None, ns_exponent=0.75,
@@ -220,7 +221,6 @@ class Word2Vec(torch.nn.Module):
             compute_loss=False,
             **kwargs,
     ):
-
         """
         训练词向量
 
@@ -240,21 +240,21 @@ class Word2Vec(torch.nn.Module):
             dataset = CBOWDataset(
                 sentences=sentences, window_size=window, word_to_idx=key_to_index,
                 vocab_size=vocab_size, num_neg_samples=negative)
-            model = CBOWModel(vocab_size=vocab_size, embedding_dim=vector_size, )
+            model = CBOWModel(vocab_size=vocab_size, embedding_dim=vector_size, ).to(self.device)
         else:  # 使用SkipGram模型
             dataset = SkipGramDataset(
                 sentences=sentences, window_size=window, word_to_idx=key_to_index,
                 vocab_size=vocab_size, num_neg_samples=negative)
-            model = SkipGramModel(vocab_size=vocab_size, embedding_dim=vector_size, )  # initial_embeddings=self.vectors
+            model = SkipGramModel(vocab_size=vocab_size, embedding_dim=vector_size, ).to(self.device)  # initial_embeddings=self.vectors
 
         # TODO num_workers
-        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_words, shuffle=True, num_workers=0)
+        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_words, shuffle=True, num_workers=workers, persistent_workers=True, prefetch_factor=5)
 
         # 设置优化器
         optimizer = torch.optim.Adam(model.parameters(), lr=start_alpha)
 
         # 学习率更新函数
-        lr_lambda = lambda epoch: 1.0 if epochs == 1 else 1 - (1 - end_alpha / start_alpha) * epoch / (epochs - 1)
+        def lr_lambda(epoch): return 1.0 if epochs == 1 else 1 - (1 - end_alpha / start_alpha) * epoch / (epochs - 1)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
         # 训练
@@ -265,8 +265,8 @@ class Word2Vec(torch.nn.Module):
                 positive_data, positive_target = data.to(self.device), target.to(self.device)
 
                 if negative > 0 and word_freq_dist is not None:
-                    negative_data = torch.cat([word_freq_dist.sample((positive_data.shape)) for _ in range(negative)])
-                    negative_target = torch.cat([positive_target for _ in range(negative)])
+                    negative_data = torch.cat([word_freq_dist.sample((positive_data.shape)) for _ in range(negative)]).to(self.device)
+                    negative_target = torch.cat([positive_target for _ in range(negative)]).to(self.device)
 
                 optimizer.zero_grad()
                 loss = model(positive_context=positive_data, positive_target=positive_target,
@@ -274,14 +274,16 @@ class Word2Vec(torch.nn.Module):
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-            logging.debug(f'Epoch [{epoch + 1}/{epochs}], Loss: {total_loss / len(train_loader):.10f}')
-            logging.debug(f'Epoch [{epoch + 1}/{epochs}], LearningRate: {optimizer.param_groups[0]["lr"]:.5f}')
+
+            logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - Epoch [{epoch + 1}/{epochs}], Loss: {total_loss / len(train_loader):.10f}')
+            logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - Epoch [{epoch + 1}/{epochs}], LearningRate: {optimizer.param_groups[0]["lr"]:.5f}')
             scheduler.step()
+
+        model.eval()  # 训练完成
 
         # 训练结束：更新词嵌入表 TODO
         self.context_vectors = model.context_embeddings.weight.detach().cpu().numpy()
         self.target_vectors = model.target_embeddings.weight.detach().cpu().numpy()
-
         self.context_norms = numpy.linalg.norm(self.context_vectors, axis=1)
         self.target_norms = numpy.linalg.norm(self.target_vectors, axis=1)
 
@@ -514,25 +516,90 @@ class Word2Vec(torch.nn.Module):
         """
         主成分分析
         """
-        words = self._ensure_list(words)
-        words_embeddings = self.target_vectors([self.key_to_index[word] for word in words])
+        _words = self._ensure_list(words)
+        words_embeddings = [self.target_vectors[self.key_to_index[word]] if word in self.key_to_index else numpy.zeros(self.vector_size) for word in _words]
         pca = PCA(n_components=n_components)
         return pca.fit_transform(words_embeddings)
 
     def save(self, filename):
         # TODO  save权重和属性
         torch.save({
-            # 'name': self.name,
-            # 'value': self.value,
+            'stopwords': self.stopwords,
+            'vector_size': self.vector_size,
+            'window': self.window,
+            'min_count': self.min_count,
+            'workers': self.workers,
+            'algorithm': self.algorithm,
+            # self.hs = hs
+            'negative': self.negative,
+            'ns_exponent': self.ns_exponent,
+            'cbow_mean': self.cbow_mean,
+            'alpha': self.alpha,
+            'min_alpha': self.min_alpha,
+            'epochs': self.epochs,
+            'compute_loss': self.compute_loss,
+            'seed': self.seed,
+            'sample': self.sample,
+            'sorted_vocab': self.sorted_vocab,
+            'batch_words': self.batch_words,
+            'trim_rule': self.trim_rule,
+            'callbacks': self.callbacks,
+            'shrink_windows': self.shrink_windows,
+
+            # 运行中参数
+            'raw_vocab_freq': self.raw_vocab_freq,
+            'corpus_count': self.corpus_count,
+            'corpus_total_words': self.corpus_total_words,
+            'vocab_size': self.vocab_size,
+            'index_to_key': self.index_to_key,
+            'key_to_index': self.key_to_index,
+            'context_vectors': self.context_vectors,
+            'context_norms': self.context_norms,
+            'target_vectors': self.target_vectors,
+            'target_norms': self.target_norms,
+            'device': self.device,
+
             'model_state_dict': self.state_dict(),
         }, filename)
 
     @classmethod
-    def load(cls, filename):
-        # 从文件中加载模型的状态字典
+    def load(self, filename):
         # TODO  load权重和属性
         checkpoint = torch.load(filename)
-        # model = cls(checkpoint['name'], checkpoint['value'])
-        model = cls()
-        model.load_state_dict(checkpoint['model_state_dict'])
-        return model
+        # model = self(checkpoint['name'], checkpoint['value'])
+        word2vec = self()
+        word2vec.stopwords = checkpoint['stopwords']
+        word2vec.vector_size = checkpoint['vector_size']
+        word2vec.window = checkpoint['window']
+        word2vec.min_count = checkpoint['min_count']
+        word2vec.workers = checkpoint['workers']
+        word2vec.algorithm = checkpoint['algorithm']
+        # word2vec.hs = checkpoint['hs']
+        word2vec.negative = checkpoint['negative']
+        word2vec.ns_exponent = checkpoint['ns_exponent']
+        word2vec.cbow_mean = checkpoint['cbow_mean']
+        word2vec.alpha = checkpoint['alpha']
+        word2vec.min_alpha = checkpoint['min_alpha']
+        word2vec.epochs = checkpoint['epochs']
+        word2vec.compute_loss = checkpoint['compute_loss']
+        word2vec.seed = checkpoint['seed']
+        word2vec.sample = checkpoint['sample']
+        word2vec.sorted_vocab = checkpoint['sorted_vocab']
+        word2vec.batch_words = checkpoint['batch_words']
+        word2vec.trim_rule = checkpoint['trim_rule']
+        word2vec.callbacks = checkpoint['callbacks']
+        word2vec.shrink_windows = checkpoint['shrink_windows']
+
+        word2vec.raw_vocab_freq = checkpoint['raw_vocab_freq']
+        word2vec.corpus_count = checkpoint['corpus_count']
+        word2vec.corpus_total_words = checkpoint['corpus_total_words']
+        word2vec.vocab_size = checkpoint['vocab_size']
+        word2vec.index_to_key = checkpoint['index_to_key']
+        word2vec.key_to_index = checkpoint['key_to_index']
+        word2vec.context_vectors = checkpoint['context_vectors']
+        word2vec.context_norms = checkpoint['context_norms']
+        word2vec.target_vectors = checkpoint['target_vectors']
+        word2vec.target_norms = checkpoint['target_norms']
+        word2vec.device = checkpoint['device']
+        word2vec.load_state_dict(checkpoint['model_state_dict'])
+        return word2vec
