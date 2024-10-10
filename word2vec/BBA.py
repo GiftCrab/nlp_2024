@@ -7,12 +7,13 @@ import datetime
 from SkipGram import SkipGramModel, SkipGramDataset
 from CBOW import CBOWModel, CBOWDataset
 from sklearn.decomposition import PCA
+import gc
 
 
 class Word2Vec(torch.nn.Module):
     def __init__(
-            self, sentences=None, stopwords=None, vector_size=100, window=5, min_count=5, workers=1, algorithm=0,
-            hs=0, negative=5, ns_exponent=0.75, cbow_mean=1, alpha=0.025, min_alpha=0.001,
+            self, sentences=None, stopwords=None, vector_size=100, window=5, min_count=5, workers=0, algorithm=0,
+            hs=0, negative=5, ns_exponent=0.75, cbow_mean=1, alpha=0.01, min_alpha=0.001,
             epochs=5, compute_loss=False, seed=1, max_final_vocab=None, sample=1e-3, sorted_vocab=True,
             batch_words=256, trim_rule=None, callbacks=(), shrink_windows=True
     ):
@@ -86,15 +87,15 @@ class Word2Vec(torch.nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # 1. 数据预处理
-        sentences = self.prepare_data(sentences=sentences, stopwords=self.stopwords, )
+        tokens = self.prepare_data(sentences=sentences, stopwords=self.stopwords, )
 
         # 2. 词汇表构建
-        self.build_vocab(sentences=sentences, min_count=self.min_count,
+        self.build_vocab(sentences=tokens, min_count=self.min_count,
                          sorted_vocab=self.sorted_vocab,
                          negative=self.negative, ns_exponent=self.ns_exponent)
 
         # 3. 训练词向量
-        self.train(sentences=sentences, epochs=self.epochs,
+        self.train(sentences=tokens, epochs=self.epochs,
                    algorithm=self.algorithm,
                    window=self.window,
                    key_to_index=self.key_to_index,
@@ -111,6 +112,7 @@ class Word2Vec(torch.nn.Module):
         """
         数据预处理：去除停用词
         """
+        logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - prepare_data')
         tokens = []
         for sentence in sentences:
             token = []
@@ -132,7 +134,7 @@ class Word2Vec(torch.nn.Module):
         根据sentences 构建词汇表
         词频、语料库、总词数、词汇表大小、min_count、词频排序、key和index映射、负采样表
         """
-
+        logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - build_vocab')
         assert sentences is not None
 
         # word_freq = Counter(list(itertools.chain.from_iterable(sentences)))
@@ -156,6 +158,8 @@ class Word2Vec(torch.nn.Module):
         for key in list(word_freq.keys()):
             if word_freq[key] < min_count:
                 del word_freq[key]
+
+        gc.collect()  # 手动调用垃圾回收器
 
         # 词频排序，设置index和key映射
         if sorted_vocab:  # 排序只改变index_to_key和key_to_index，不改变词频raw_vocab_freq
@@ -215,7 +219,7 @@ class Word2Vec(torch.nn.Module):
             negative=5,
             word_freq_dist=None,
             batch_words=256,
-            workers=1,
+            workers=0,
             vector_size=100,
             start_alpha=0.025, end_alpha=0.001,
             compute_loss=False,
@@ -229,6 +233,8 @@ class Word2Vec(torch.nn.Module):
         TODO 参数描述
 
         """
+
+        logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - train')
 
         assert sentences is not None
 
@@ -247,8 +253,8 @@ class Word2Vec(torch.nn.Module):
                 vocab_size=vocab_size, num_neg_samples=negative)
             model = SkipGramModel(vocab_size=vocab_size, embedding_dim=vector_size, ).to(self.device)  # initial_embeddings=self.vectors
 
-        # TODO num_workers
-        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_words, shuffle=True, num_workers=workers, persistent_workers=True, prefetch_factor=5)
+        # TODO num_workers workers
+        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_words, shuffle=True, num_workers=workers)
 
         # 设置优化器
         optimizer = torch.optim.Adam(model.parameters(), lr=start_alpha)
@@ -258,9 +264,11 @@ class Word2Vec(torch.nn.Module):
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
         # 训练
+        lossmap = {}
         for epoch in range(epochs):
             model.train()
-            total_loss = 0
+            epoch_loss = 0
+            train_epoch = 0
             for data, target, n in train_loader:
                 positive_data, positive_target = data.to(self.device), target.to(self.device)
 
@@ -273,22 +281,33 @@ class Word2Vec(torch.nn.Module):
                              negative_context=negative_data, negative_target=negative_target)
                 loss.backward()
                 optimizer.step()
-                total_loss += loss.item()
+                epoch_loss += loss.item()
+                train_epoch += 1
 
-            logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - Epoch [{epoch + 1}/{epochs}], Loss: {total_loss / len(train_loader):.10f}')
-            logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - Epoch [{epoch + 1}/{epochs}], LearningRate: {optimizer.param_groups[0]["lr"]:.5f}')
+                if train_epoch % 100 == 0:
+                    logging.debug(f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - {type(model).__name__} - Epoch [{epoch + 1}/{epochs}], Training: {train_epoch*batch_words}/{len(dataset)}')
+
+            if compute_loss:
+                lossmap[epoch + 1] = epoch_loss / len(train_loader)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            logging.debug(
+                f'{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - {type(model).__name__} - Epoch [{epoch + 1}/{epochs}], Loss: {epoch_loss / len(train_loader):.10f}, LearningRate: {optimizer.param_groups[0]["lr"]:.5f}')
+
             scheduler.step()
 
         model.eval()  # 训练完成
 
-        # 训练结束：更新词嵌入表 TODO
+        # 训练结束：更新词嵌入表
         self.context_vectors = model.context_embeddings.weight.detach().cpu().numpy()
         self.target_vectors = model.target_embeddings.weight.detach().cpu().numpy()
         self.context_norms = numpy.linalg.norm(self.context_vectors, axis=1)
         self.target_norms = numpy.linalg.norm(self.target_vectors, axis=1)
+        self.lossmap = lossmap
 
     def most_similar(
-            self, positive=None, negative=None, topn=10, clip_start=0, clip_end=None,
+            self, positive=None, negative=None, topn=10, decimal=8, clip_start=0, clip_end=None,
             restrict_vocab=None,
     ):
         """
@@ -352,14 +371,14 @@ class Word2Vec(torch.nn.Module):
         # 计算每个向量与 mean 向量的点积
         dists = numpy.dot(
             [self.get_vector_by_index(index=i, vectors=self.target_vectors, norms=self.target_norms, norm=True) for i
-             in range(clip_start, clip_end)], mean)
+             in range(clip_start, clip_end)], mean/numpy.linalg.norm(mean))
         if not topn:
             return dists
 
         best = utils.argsort(dists, topn=topn + len(all_keys), reverse=True)
         # 忽略（不返回）输入中的键
         result = [
-            (self.index_to_key[sim + clip_start], float(dists[sim]))
+            (self.index_to_key[sim + clip_start], round(float(dists[sim]), decimal))
             for sim in best if (sim + clip_start) not in all_keys
         ]
         return result[:topn]
@@ -564,7 +583,7 @@ class Word2Vec(torch.nn.Module):
 
     @classmethod
     def load(self, filename):
-        # TODO  load权重和属性
+        # load权重和属性
         checkpoint = torch.load(filename)
         # model = self(checkpoint['name'], checkpoint['value'])
         word2vec = self()

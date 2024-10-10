@@ -1,20 +1,46 @@
 import torch
+import threading
+from concurrent.futures import ThreadPoolExecutor
+import itertools
 
 
 class CBOWDataset(torch.utils.data.Dataset):
+    # def __init__(self, sentences=None, window_size=2, word_to_idx={}, vocab_size=None, num_neg_samples=5):
+    #     assert sentences is not None
+    #     self.vocab_size = vocab_size
+    #     self.num_neg_samples = num_neg_samples
+    #     data = []
+    #     for sentence in sentences:
+    #         for i in range(window_size, len(sentence) - window_size):
+    #             target = sentence[i]
+    #             context = ([sentence[j] for j in range(i - window_size, i) if sentence[j] in word_to_idx] +
+    #                        [sentence[j] for j in range(i + 1, i + window_size + 1) if sentence[j] in word_to_idx])
+    #             if target in word_to_idx and len(context) == 2 * window_size:
+    #                 data.append(([word_to_idx[word] for word in context], word_to_idx[target]))
+    #     self.data = data  # 上下文语境，目标词
     def __init__(self, sentences=None, window_size=2, word_to_idx={}, vocab_size=None, num_neg_samples=5):
         assert sentences is not None
         self.vocab_size = vocab_size
         self.num_neg_samples = num_neg_samples
+        self.word_to_idx = word_to_idx
+        self.window_size = window_size
+
+        # 使用线程池处理数据
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(self.process_sentence, sentences))
+
+        # 合并所有线程的结果
+        self.data = list(itertools.chain.from_iterable(results))
+
+    def process_sentence(self, sentence):
         data = []
-        for sentence in sentences:
-            for i in range(window_size, len(sentence) - window_size):
-                target = sentence[i]
-                context = ([sentence[j] for j in range(i - window_size, i) if sentence[j] in word_to_idx] +
-                           [sentence[j] for j in range(i + 1, i + window_size + 1) if sentence[j] in word_to_idx])
-                if target in word_to_idx and context:
-                    data.append(([word_to_idx[word] for word in context], word_to_idx[target]))
-        self.data = data  # 上下文语境，目标词
+        for i in range(self.window_size, len(sentence) - self.window_size):
+            target = sentence[i]
+            context = ([sentence[j] for j in range(i - self.window_size, i) if sentence[j] in self.word_to_idx] +
+                       [sentence[j] for j in range(i + 1, i + self.window_size + 1) if sentence[j] in self.word_to_idx])
+            if target in self.word_to_idx and len(context) == 2 * self.window_size:
+                data.append(([self.word_to_idx[word] for word in context], self.word_to_idx[target]))
+        return data
 
     def __len__(self):
         return len(self.data)
